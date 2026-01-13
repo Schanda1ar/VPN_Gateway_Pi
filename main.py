@@ -1,6 +1,10 @@
 import subprocess
 import sys
 import json
+import os
+import time
+import platform
+
 from pathlib import Path
 from loguru import logger
 
@@ -10,6 +14,9 @@ BASE_CONFIG_PATH = BASE_DIR / "config.json"
 
 class GatewayManager:
     def __init__(self, config_path: Path):
+
+        
+        # 3. Konfiguration laden
         self.config_path = config_path
         self.base_config = self._load_config(self.config_path)
         # Werte aus der config.json ziehen
@@ -18,10 +25,36 @@ class GatewayManager:
         # VPN Tabelle und lokales Netzwerk aus der Basis-Konfiguration laden
         self.vpn_table = self.base_config.get("vpn_table_id", "100")
         self.local_net = self.base_config.get("local_network", "192.168.178.0/24")
-        self.dry_run = self.base_config.get("dry_run")
+        is_linux = platform.system() == "Linux"
+        self.dry_run = self.base_config.get("dry_run", False) or not is_linux
         
         # Geräteinformationen laden
         self.devices = self._load_json(self.device_file)
+        if self.dry_run is not True:
+            self.prepare_system()
+
+    def prepare_system(self):
+        logger.info("Starte Initialisierung (WireGuard Modus)...")
+
+        # 1. Warten bis WireGuard bereit ist (max 45 Sek)
+        found_iface = None
+        for attempt in range(15):
+            found_iface = self._get_vpn_interface()
+            if found_iface:
+                self.vpn_iface = found_iface
+                logger.success(f"WireGuard Interface '{self.vpn_iface}' ist bereit.")
+                break
+            logger.info(f"Warte auf WireGuard... (Versuch {attempt+1}/15)")
+            time.sleep(3)
+
+        if not self.vpn_iface:
+            logger.critical("WireGuard Interface wurde nicht gefunden! Abbruch.")
+            return
+
+        # 2. Infrastruktur mit dem gefundenen Interface setzen
+        self._ensure_ip_forwarding()
+        self._setup_nat(self.vpn_iface)
+
 
     def _load_json(self, path: Path) -> dict:
         if not path.exists():
@@ -68,6 +101,56 @@ class GatewayManager:
             except Exception as e:
                 logger.error(f"Fehler beim Speichern der JSON: {e}")
 
+    def _get_vpn_interface(self) -> str:
+        """Findet das aktive WireGuard Interface (z.B. wg0)."""
+        try:
+            interfaces = os.listdir('/sys/class/net/')
+            # Suche primär nach wg-Interfaces, fallback auf tun
+            vpn_ifs = [i for i in interfaces if i.startswith('wg')]
+            if not vpn_ifs:
+                vpn_ifs = [i for i in interfaces if i.startswith('tun')]
+                
+            return vpn_ifs[0] if vpn_ifs else None
+        except Exception as e:
+            logger.error(f"Fehler beim Lesen der Interfaces: {e}")
+            return None
+        
+    def _ensure_ip_forwarding(self):
+        """Aktiviert das IP-Forwarding im Linux-Kernel."""
+        logger.debug("Prüfe IP-Forwarding Status...")
+        # Befehl zum Aktivieren des Forwardings
+        cmd = ["sudo", "sysctl", "-w", "net.ipv4.ip_forward=1"]
+        
+        if self.dry_run:
+            logger.info(f"[Dry-Run] Würde IP-Forwarding aktivieren: {' '.join(cmd)}")
+        else:
+            result = self._execute(cmd)
+            if result and result.returncode == 0:
+                logger.success("IP-Forwarding ist AKTIV.")
+            else:
+                logger.error("IP-Forwarding konnte nicht aktiviert werden!")
+
+    def _setup_nat(self, vpn_iface: str):
+        """Richtet das NAT Masquerading für das WireGuard-Interface ein."""
+        # -C prüft, ob die Regel bereits existiert (verhindert Duplikate)
+        check_cmd = ["sudo", "iptables", "-t", "nat", "-C", "POSTROUTING", "-o", vpn_iface, "-j", "MASQUERADE"]
+        # -A fügt die Regel hinzu
+        add_cmd = ["sudo", "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", vpn_iface, "-j", "MASQUERADE"]
+
+        if self.dry_run:
+            logger.info(f"[Dry-Run] Würde NAT für {vpn_iface} prüfen/aktivieren.")
+            return
+
+        # Erst prüfen, ob die Regel schon da ist
+        check_result = self._execute(check_cmd)
+        
+        if check_result and check_result.returncode != 0:
+            logger.info(f"NAT für {vpn_iface} nicht gefunden. Aktiviere...")
+            self._execute(add_cmd)
+            logger.success(f"NAT Masquerading für {vpn_iface} wurde aktiviert.")
+        else:
+            logger.debug(f"NAT für {vpn_iface} ist bereits konfiguriert.")
+
     def _execute(self, cmd: list):
         """Führt einen Shell-Befehl aus und gibt das Ergebnis zurück."""
         if self.dry_run:
@@ -111,7 +194,7 @@ class GatewayManager:
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
         elif profile == "Sicher":
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
-            self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
+            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
         
         if update_json:
 
