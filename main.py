@@ -8,8 +8,18 @@ import platform
 from pathlib import Path
 from loguru import logger
 
+
+def get_base_dir() -> Path:
+    """Bestimmt das Basisverzeichnis, egal ob .py oder .exe."""
+    if getattr(sys, 'frozen', False):
+        # Wenn die EXE läuft, nutze den Pfad der EXE-Datei
+        return Path(sys.executable).resolve().parent
+    
+    # Wenn das Skript normal läuft (.py)
+    return Path(__file__).resolve().parent
+
 # --- BASIS SETUP ---
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = get_base_dir()
 BASE_CONFIG_PATH = BASE_DIR / "config.json"
 
 class GatewayManager:
@@ -17,7 +27,7 @@ class GatewayManager:
         self.config_path = config_path
         self.base_config = self._load_config(self.config_path)
         # Gerätedatei aus der Basis-Konfiguration laden
-        self.device_file = Path(self.base_config.get("device_file", BASE_DIR / "devices.json"))
+        self.device_file = BASE_DIR / "devices.json"
         # VPN Tabelle und lokales Netzwerk aus der Basis-Konfiguration laden
         self.vpn_table = self.base_config.get("vpn_table_id", "100")
         self.local_net = self.base_config.get("local_network", "192.168.178.0/24")
