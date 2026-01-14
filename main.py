@@ -14,14 +14,10 @@ BASE_CONFIG_PATH = BASE_DIR / "config.json"
 
 class GatewayManager:
     def __init__(self, config_path: Path):
-
-        
-        # 3. Konfiguration laden
         self.config_path = config_path
         self.base_config = self._load_config(self.config_path)
-        # Werte aus der config.json ziehen
+        # Gerätedatei aus der Basis-Konfiguration laden
         self.device_file = Path(self.base_config.get("device_file", BASE_DIR / "devices.json"))
-
         # VPN Tabelle und lokales Netzwerk aus der Basis-Konfiguration laden
         self.vpn_table = self.base_config.get("vpn_table_id", "100")
         self.local_net = self.base_config.get("local_network", "192.168.178.0/24")
@@ -36,7 +32,7 @@ class GatewayManager:
     def _prepare_system(self):
         logger.info("Starte Initialisierung (WireGuard Modus)...")
 
-        # 1. Warten bis WireGuard bereit ist (max 45 Sek)
+        # Warten bis WireGuard bereit ist (max 45 Sek)
         found_iface = None
         for attempt in range(15):
             found_iface = self._get_vpn_interface()
@@ -51,12 +47,13 @@ class GatewayManager:
             logger.critical("WireGuard Interface wurde nicht gefunden! Abbruch.")
             return
 
-        # 2. Infrastruktur mit dem gefundenen Interface setzen
+        # Infrastruktur mit dem gefundenen Interface setzen
         self._ensure_ip_forwarding()
         self._setup_nat(self.vpn_iface)
 
 
     def _load_json(self, path: Path) -> dict:
+        """Lädt die Geräte JSON-Datei und gibt deren Inhalt als Dictionary zurück."""
         if not path.exists():
             logger.info(f"Datei nicht gefunden. Erstelle neue Konfiguration unter: {path}")
             try:
@@ -73,9 +70,8 @@ class GatewayManager:
             logger.error(f"Fehler beim Laden von {path}: {e}")
             return {}
 
-    # ... (Rest der apply_profile Methode nutzt nun self.vpn_table etc.) ...
-
     def _load_config(self, path: Path) -> dict:
+        """Lädt die Basis-Konfiguration aus der Config JSON-Datei."""
         if not self.config_path.exists():
             logger.error(f"Konfigurationsdatei {self.config_path} fehlt!")
             return {}
@@ -90,7 +86,6 @@ class GatewayManager:
         """Speichert den aktuellen Zustand der Profile in der JSON."""
         if self.dry_run:
             logger.debug(f"[DRY-RUN] Speichere JSON nach {self.device_file}")
-            # Optional: Trotzdem speichern, um die Dateilogik zu testen
             with open(self.device_file, 'w') as f:
                 json.dump(self.devices, f, indent=4)
         else:
@@ -143,7 +138,6 @@ class GatewayManager:
 
         # Erst prüfen, ob die Regel schon da ist
         check_result = self._execute(check_cmd)
-        
         if check_result and check_result.returncode != 0:
             logger.info(f"NAT für {vpn_iface} nicht gefunden. Aktiviere...")
             self._execute(add_cmd)
@@ -178,7 +172,6 @@ class GatewayManager:
             if profile == "Normal":
                 logger.info(f"Setze Profil für {self.devices[ip]['name']} ({ip}) auf 'Normal' und entferne alle Regeln.")
                 self.devices[ip]["profile"] = profile
-                
             else:
                 logger.info(f"Aktualisiere Profil für {self.devices[ip]['name']} ({ip}) von {self.devices[ip]['profile']} zu {profile}")
                 self.devices[ip]["profile"] = profile
@@ -197,7 +190,6 @@ class GatewayManager:
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
         
         if update_json:
-
             self._save_device_config()
             
         logger.info(f"Profil '{profile}' aktiv für {self.devices[ip]['name']} ({ip})")
@@ -210,8 +202,6 @@ class GatewayManager:
         logger.success("Alle Profile nach Reboot wiederhergestellt.")
 
 if __name__ == "__main__":
-
-
     manager = GatewayManager(BASE_CONFIG_PATH)
     if len(sys.argv) == 2 and sys.argv[1] == "--all":
         manager.init_all_devices()
@@ -220,7 +210,6 @@ if __name__ == "__main__":
         print("--- Gateway Manager Interaktiv ---")
         print(" Erstelle neues Profil für das Gerät mit IP-Adresse, Profil und optionalem Namen.")
         print("-" * 34)
-        
         try:
             ip = input("IP-Adresse des Geräts: ").strip()
             if not ip:
@@ -228,11 +217,9 @@ if __name__ == "__main__":
                 
             profile = input("Profil (Normal/VPN/Sicher): ").strip()
             name = input("Name für dieses Gerät (optional): ").strip()
-
             if not name:
                 name = ip  # Standardname ist die IP-Adresse
             
-            # Falls Name leer bleibt, None übergeben (apply_profile regelt das)
             manager.apply_profile(ip, profile, name )
             
         except KeyboardInterrupt:
@@ -244,9 +231,8 @@ if __name__ == "__main__":
     elif len(sys.argv) == 4:
         ip_arg = sys.argv[1]
         profile_arg = sys.argv[2]
-        # Optionaler Name, falls vorhanden
-        name_arg = sys.argv[3] if len(sys.argv) == 4 else None
-        
+        # Optionaler Name, falls vorhanden sonst IP als Name
+        name_arg = sys.argv[3] if len(sys.argv) == 4 else ip_arg
         manager.apply_profile(ip_arg, profile_arg, name_arg)
 
     else:
