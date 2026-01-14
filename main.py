@@ -31,9 +31,9 @@ class GatewayManager:
         # Geräteinformationen laden
         self.devices = self._load_json(self.device_file)
         if self.dry_run is not True:
-            self.prepare_system()
+            self._prepare_system()
 
-    def prepare_system(self):
+    def _prepare_system(self):
         logger.info("Starte Initialisierung (WireGuard Modus)...")
 
         # 1. Warten bis WireGuard bereit ist (max 45 Sek)
