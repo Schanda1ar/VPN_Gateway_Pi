@@ -32,11 +32,12 @@ class GatewayManager:
         self.vpn_table = self.base_config.get("vpn_table_id", "100")
         self.local_net = self.base_config.get("local_network", "192.168.178.0/24")
         is_linux = platform.system() == "Linux"
-        self.dry_run = self.base_config.get("dry_run", False) or not is_linux
+        self.dry_run = self.base_config.get("dry_run", True)
         
         # Geräteinformationen laden
         self.devices = self._load_json(self.device_file)
-        if self.dry_run is not True:
+        print(self.dry_run)
+        if is_linux is True or self.dry_run != "True":
             self._prepare_system()
 
     def _prepare_system(self):
@@ -230,10 +231,10 @@ if __name__ == "__main__":
                 
             profile = input("Profil (Normal/VPN/Sicher): ").strip()
             name = input("Name für dieses Gerät (optional): ").strip()
-            if not name:
+            if not name or name == "":
                 name = ip  # Standardname ist die IP-Adresse
             
-            manager.apply_profile(ip, profile, name )
+            manager.apply_profile(ip, profile, name, update_json=True)
             
         except KeyboardInterrupt:
             print("\nAbgebrochen durch Nutzer.")
@@ -246,7 +247,7 @@ if __name__ == "__main__":
         profile_arg = sys.argv[2]
         # Optionaler Name, falls vorhanden sonst IP als Name
         name_arg = sys.argv[3] if len(sys.argv) == 4 else ip_arg
-        manager.apply_profile(ip_arg, profile_arg, name_arg)
+        manager.apply_profile(ip_arg, profile_arg, name_arg,update_json=True)
 
     else:
         print("Nutzung:")
