@@ -193,11 +193,13 @@ class GatewayManager:
         self._execute(["sudo", "ip", "rule", "del", "from", ip, "table", self.vpn_table])
         self._execute(["sudo", "iptables", "-D", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
         self._execute(["sudo", "iptables", "-D", "FORWARD", "-s", ip, "-p", "udp", "--dport", 53, "!", "-o", self.vpn_iface, "-j", "REJECT"])
+        self._execute(["sudo", "ip6tables", "-P", "FORWARD", "DROP"])
 
         # Neue Regeln basierend auf dem Profil anwenden
         if profile == "VPN":
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
             self._execute(["sudo", "iptables", "-A", "FORWARD",  "-s", ip, "-p", "udp", "--dport", 53, "!", "-o", self.vpn_iface, "-j", "REJECT"])
+            
         elif profile == "Sicher":
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
             self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "-p", "udp", "--dport", 53, "!", "-o", self.vpn_iface, "-j", "REJECT"])
