@@ -57,8 +57,22 @@ class GatewayManager:
         if not self.vpn_iface:
             logger.critical("WireGuard Interface wurde nicht gefunden! Abbruch.")
             return
+        mss_rule = ["FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu"]
+        check_cmd = ["sudo", "iptables", "-t", "mangle", "-C" ] + mss_rule
+        add_cmd = ["sudo", "iptables", "-t", "mangle", "-A" ] + mss_rule
+        
+        if self.dry_run:
+            logger.info("[Dry-Run] Würde MSS-Clamping Regel prüfen/setzen.")
+            return
 
-        # Infrastruktur mit dem gefundenen Interface setzen
+        mss_result = self._execute(check_cmd)
+        if mss_result and mss_result.returncode != 0:
+            logger.info("MSS-Clamping Regel nicht gefunden. Setze Regel...")
+            self._execute(add_cmd)
+            logger.success("MSS-Clamping Regel wurde gesetzt.")
+        else:
+            logger.debug("MSS-Clamping Regel ist bereits gesetzt.")
+        
         self._ensure_ip_forwarding()
         self._setup_nat(self.vpn_iface)
 
