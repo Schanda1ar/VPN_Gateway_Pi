@@ -54,9 +54,10 @@ class GatewayManager:
             logger.info(f"Warte auf WireGuard... (Versuch {attempt+1}/15)")
             time.sleep(3)
 
-        if not self.vpn_iface:
+        if not found_iface:
             logger.critical("WireGuard Interface wurde nicht gefunden! Abbruch.")
-            return
+            input("Drücke Enter zum Beenden...")
+            sys.exit(1)
         mss_rule = ["FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu"]
         check_cmd = ["sudo", "iptables", "-t", "mangle", "-C" ] + mss_rule
         add_cmd = ["sudo", "iptables", "-t", "mangle", "-A" ] + mss_rule
@@ -170,13 +171,14 @@ class GatewayManager:
         else:
             logger.debug(f"NAT für {vpn_iface} ist bereits konfiguriert.")
 
-    def _execute(self, cmd: list):
+    def _execute(self, cmd_raw: list):
         """Führt einen Shell-Befehl aus und gibt das Ergebnis zurück."""
         if self.dry_run:
-            logger.debug(f"[DRY-RUN] Executing: {cmd}")
+            logger.debug(f"[DRY-RUN] Executing: {cmd_raw}")
             return None # Simuliere Erfolg
         else:
             try:
+                cmd = [str(arg) for arg in cmd_raw]
                 # check=False verhindert den Absturz bei Fehlern (z.B. Regel nicht gefunden)
                 result = subprocess.run(cmd, capture_output=True, text=True, check=False)
                 if result.returncode != 0:
