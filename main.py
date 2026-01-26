@@ -206,17 +206,29 @@ class GatewayManager:
             logger.info(f"Initialisiere Profile für {ip}.")
 
         # Vorherige Regeln entfernen um Konflikte zu vermeiden
+        self._execute(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", ip, "-o", self.vpn_iface, "-j", "MASQUERADE"])
+        self._execute(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", ip, "-o", "eth0", "-j", "MASQUERADE"])
         self._execute(["sudo", "ip", "rule", "del", "from", ip, "table", self.vpn_table])
         self._execute(["sudo", "iptables", "-D", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
         self._execute(["sudo", "iptables", "-t", "nat", "-D", "PREROUTING", "-s", ip, "-p", "udp", "--dport", 53, 
-                           "-j", "DNAT", "--to-destination", "1.1.1.1:53"
+                           "-j", "DNAT", "--to-destination", "1.1.1.1"
+            ])
+        self._execute(["sudo", "iptables", "-t", "nat", "-D", "PREROUTING", "-s", ip, "-p", "udp", "--dport", 53, 
+                           "-j", "DNAT", "--to-destination", "194.242.2.3"
             ])
         self._execute(["sudo", "ip6tables", "-P", "FORWARD", "DROP"])
 
-        if profile in ["VPN", "Sicher"]:
+        if profile in ["Normal", "Sniff"]:
+            
+            # DNS-Zwangsumleitung für auf Claudflare 
+            self._execute(["sudo", "iptables", "-t", "nat", "-I", "PREROUTING", "-s", ip, "-p", "udp", "--dport", 53, 
+                           "-j", "DNAT", "--to-destination", "1.1.1.1"
+            ])
+        elif profile in ["VPN", "Sicher"]:
+            
             # DNS-Zwangsumleitung für alle VPN-Profile (Anti-Leak)
             self._execute(["sudo", "iptables", "-t", "nat", "-I", "PREROUTING", "-s", ip, "-p", "udp", "--dport", 53, 
-                           "-j", "DNAT", "--to-destination", "1.1.1.1:53"
+                           "-j", "DNAT", "--to-destination", "194.242.2.3"
             ])
 
         # Neue Regeln basierend auf dem Profil anwenden
@@ -227,6 +239,9 @@ class GatewayManager:
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
             self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "!", "-o", self.vpn_iface, "-j", "REJECT"])
+        elif profile == "Normal":
+            self._execute(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", ip, "-o", "eth0", "-j", "MASQUERADE"])
+            self._execute(["sudo", "iptables", "-t", "nat", "-I", "POSTROUTING", "-s", ip, "-o", "eth0", "-j", "MASQUERADE"])
 
         #Profile for sniffing sketchy traffic via wireshark
         elif profile == "Sniff":
