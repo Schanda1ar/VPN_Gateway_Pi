@@ -131,11 +131,11 @@ class GatewayManager:
             if not vpn_ifs:
                 vpn_ifs = [i for i in interfaces if i.startswith('tun')]
                 
-            return vpn_ifs[0] if vpn_ifs else None
+            return vpn_ifs[0] if vpn_ifs else "eth0"
         except Exception as e:
             logger.error(f"Fehler beim Lesen der Interfaces: {e}")
-            return None
-        
+            return "eth0"
+
     def _ensure_ip_forwarding(self):
         """Aktiviert das IP-Forwarding im Linux-Kernel."""
         logger.debug("Prüfe IP-Forwarding Status...")
