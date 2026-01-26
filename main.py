@@ -228,6 +228,21 @@ class GatewayManager:
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
             self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "!", "-o", self.vpn_iface, "-j", "REJECT"])
 
+        #Profile for sniffing sketchy traffic via wireshark
+        elif profile == "Sniff":
+            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
+            self._execute([
+                "sudo", "iptables", "-t", "nat", "-I", "PREROUTING", "-s", ip, 
+                "-p", "udp", "--dport", 53, "-j", "DNAT", "--to-destination", "1.1.1.1:53"
+            ])
+            self._execute([
+                "sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", "1.1.1.1:53", 
+                "-p", "udp", "--dport", 53, "-j", "ACCEPT"
+            ])
+
+
+
+
         if update_json:
             self._save_device_config()
             
