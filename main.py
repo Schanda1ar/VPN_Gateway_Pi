@@ -240,7 +240,6 @@ class GatewayManager:
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
             self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "!", "-o", self.vpn_iface, "-j", "REJECT"])
         elif profile == "Normal":
-            self._execute(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", ip, "-o", "eth0", "-j", "MASQUERADE"])
             self._execute(["sudo", "iptables", "-t", "nat", "-I", "POSTROUTING", "-s", ip, "-o", "eth0", "-j", "MASQUERADE"])
 
         #Profile for sniffing sketchy traffic via wireshark
