@@ -232,7 +232,7 @@ class GatewayManager:
             
             # DNS-Zwangsumleitung für alle VPN-Profile (Anti-Leak)
             self._execute(["sudo", "iptables", "-t", "nat", "-I", "PREROUTING", "-s", ip, "-p", "udp", "--dport", 53, 
-                           "-j", "DNAT", "--to-destination", "194.242.2.3"
+                           "-j", "DNAT", "--to-destination", "10.64.0.7"
             ])
 
         # Neue Regeln basierend auf dem Profil anwenden
