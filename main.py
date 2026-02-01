@@ -87,6 +87,7 @@ class GatewayManager:
             logger.debug("MSS-Clamping Regel ist bereits gesetzt.")
         
         self._ensure_ip_forwarding()
+        self._disable_ipv6()
         self._setup_nat(self.vpn_iface)
 
 
@@ -305,6 +306,14 @@ class GatewayManager:
                     subprocess.run(full_cmd, shell=True)
                 
         logger.success(f"Alle iptables-Leichen für {ip} wurden entfernt.")
+
+    def _disable_ipv6(self):
+        logger.info("Deaktiviere IPv6 systemweit, um VPN-Leaks zu verhindern...")
+        # Schaltet IPv6 für alle Interfaces, das Loopback und Default aus
+        self._execute(["sudo", "sysctl", "-w", "net.ipv6.conf.all.disable_ipv6=1"])
+        self._execute(["sudo", "sysctl", "-w", "net.ipv6.conf.default.disable_ipv6=1"])
+        self._execute(["sudo", "sysctl", "-w", "net.ipv6.conf.lo.disable_ipv6=1"])
+        logger.success("IPv6 ist jetzt komplett deaktiviert.")
 
 if __name__ == "__main__":
     manager = GatewayManager(BASE_CONFIG_PATH)
