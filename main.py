@@ -54,6 +54,18 @@ class GatewayManager:
             logger.info(f"Warte auf WireGuard... (Versuch {attempt+1}/15)")
             time.sleep(3)
 
+        if found_iface:
+            self.vpn_iface = found_iface
+            
+            # --- NEU: Tabelle 100 initialisieren ---
+            # Wir fügen die Route hinzu. Falls sie schon da ist, 
+            # ignoriert unser _execute den Fehler (check=False).
+            logger.info(f"Initialisiere Routing-Tabelle {self.vpn_table}...")
+            self._execute(["sudo", "ip", "route", "replace", "default", "dev", self.vpn_iface, "table", self.vpn_table])
+            # ----------------------------------------
+
+            logger.success(f"WireGuard Interface '{self.vpn_iface}' und Tabelle {self.vpn_table} sind bereit.")
+
         if not found_iface:
             logger.critical("WireGuard Interface wurde nicht gefunden! Abbruch.")
             input("Drücke Enter zum Beenden...")
@@ -206,17 +218,9 @@ class GatewayManager:
             logger.info(f"Initialisiere Profile für {ip}.")
 
         # Vorherige Regeln entfernen um Konflikte zu vermeiden
-        self._execute(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", ip, "-o", self.vpn_iface, "-j", "MASQUERADE"])
-        self._execute(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", ip, "-o", "eth0", "-j", "MASQUERADE"])
+        self._clear_all_rules_for_ip(ip)
+
         self._execute(["sudo", "ip", "rule", "del", "from", ip, "table", self.vpn_table])
-        self._execute(["sudo", "iptables", "-D", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
-        self._execute(["sudo", "iptables", "-t", "nat", "-D", "PREROUTING", "-s", ip, "-p", "udp", "--dport", 53, 
-                           "-j", "DNAT", "--to-destination", "1.1.1.1"
-            ])
-        self._execute(["sudo", "iptables", "-t", "nat", "-D", "PREROUTING", "-s", ip, "-p", "udp", "--dport", 53, 
-                           "-j", "DNAT", "--to-destination", "194.242.2.3"
-            ])
-        self._execute(["sudo", "ip6tables", "-P", "FORWARD", "DROP"])
 
         if profile in ["Normal", "Sniff"]:
             
@@ -234,24 +238,42 @@ class GatewayManager:
         # Neue Regeln basierend auf dem Profil anwenden
         if profile == "VPN":
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
+            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-o", self.vpn_iface, "-p", "udp", "--dport", 53, "-j", "ACCEPT"])
+
+            self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "!", "-o", self.vpn_iface, "-j", "REJECT"])
             
         elif profile == "Sicher":
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
+
+            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-o", self.vpn_iface, "-p", "udp", "--dport", 53, "-j", "ACCEPT"])
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
+            
+            # Blockiere die verdächtigen UDP-Broadcasts (Ziel-Port 65001)
+            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-p", "tcp", "--dport", "14035", "-j", "DROP"])
+            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-p", "udp", "--dport", "65001", "-j", "DROP"])
+
             self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "!", "-o", self.vpn_iface, "-j", "REJECT"])
         elif profile == "Normal":
             self._execute(["sudo", "iptables", "-t", "nat", "-I", "POSTROUTING", "-s", ip, "-o", "eth0", "-j", "MASQUERADE"])
 
         #Profile for sniffing sketchy traffic via wireshark
         elif profile == "Sniff":
+            self._execute(["sudo", "iptables", "-t", "nat", "-I", "POSTROUTING", "-s", ip, "-o", "eth0", "-j", "MASQUERADE"])
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
+
             self._execute([
-                "sudo", "iptables", "-t", "nat", "-I", "PREROUTING", "-s", ip, 
-                "-p", "udp", "--dport", 53, "-j", "DNAT", "--to-destination", "1.1.1.1:53"
+                "sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", "1.1.1.1", 
+                "-p", "udp", "--dport", 53, "-j", "ACCEPT"
             ])
             self._execute([
-                "sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", "1.1.1.1:53", 
-                "-p", "udp", "--dport", 53, "-j", "ACCEPT"
+                "sudo", "iptables", "-I", "FORWARD", "-s", ip, 
+                "-p", "tcp", "-m", "multiport", "--dports", "80,443", "-j", "ACCEPT"
+            ])
+            
+            # Optional: Erlaube auch UDP 443 (QUIC), das macht YouTube schneller
+            self._execute([
+                "sudo", "iptables", "-I", "FORWARD", "-s", ip, 
+                "-p", "udp", "--dport", 443, "-j", "ACCEPT"
             ])
 
 
@@ -268,6 +290,21 @@ class GatewayManager:
             current_name = data.get("name", "Unknown")
             self.apply_profile(ip, data["profile"], name=current_name, update_json=False)
         logger.success("Alle Profile nach Reboot wiederhergestellt.")
+
+
+    def _clear_all_rules_for_ip(self, ip: str):
+        for table in ["filter", "nat", "mangle"]:
+        # Dieser Befehl findet alle Ketten, in denen die IP vorkommt
+            cmd = f"sudo iptables -t {table} -S | grep {ip} | sed -e 's/-A/-D/' -e 's/-I/-D/'"
+            rules = subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
+            
+            if rules:
+                for rule in rules.split('\n'):
+                    # Führe das Löschen aus: sudo iptables -t [table] -D ...
+                    full_cmd = f"sudo iptables -t {table} {rule}"
+                    subprocess.run(full_cmd, shell=True)
+                
+        logger.success(f"Alle iptables-Leichen für {ip} wurden entfernt.")
 
 if __name__ == "__main__":
     manager = GatewayManager(BASE_CONFIG_PATH)
