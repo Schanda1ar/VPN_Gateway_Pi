@@ -222,6 +222,7 @@ class GatewayManager:
         self._clear_all_rules_for_ip(ip)
 
         self._execute(["sudo", "ip", "rule", "del", "from", ip, "table", self.vpn_table])
+       
 
         if profile in ["Normal", "Sniff"]:
             
@@ -233,25 +234,26 @@ class GatewayManager:
             
             # DNS-Zwangsumleitung für alle VPN-Profile (Anti-Leak)
             self._execute(["sudo", "iptables", "-t", "nat", "-I", "PREROUTING", "-s", ip, "-p", "udp", "--dport", 53, 
-                           "-j", "DNAT", "--to-destination", "10.64.0.7"
+                           "-j", "DNAT", "--to-destination", "10.64.0.1"
             ])
 
         # Neue Regeln basierend auf dem Profil anwenden
         if profile == "VPN":
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-o", self.vpn_iface, "-p", "udp", "--dport", 53, "-j", "ACCEPT"])
-
+            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-o", self.vpn_iface, "-p", "tcp", "-m", "multiport", "--dports", "80,443", "-j", "ACCEPT"])
             self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "!", "-o", self.vpn_iface, "-j", "REJECT"])
             
         elif profile == "Sicher":
             self._execute(["sudo", "ip", "rule", "add", "from", ip, "table", self.vpn_table])
 
+            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-o", self.vpn_iface, "-p", "tcp", "-m", "multiport", "--dports", "80,443", "-j", "ACCEPT"])
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-o", self.vpn_iface, "-p", "udp", "--dport", 53, "-j", "ACCEPT"])
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-d", self.local_net, "-j", "DROP"])
             
             # Blockiere die verdächtigen UDP-Broadcasts (Ziel-Port 65001)
             self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-p", "tcp", "--dport", "14035", "-j", "DROP"])
-            self._execute(["sudo", "iptables", "-I", "FORWARD", "-s", ip, "-p", "udp", "--dport", "65001", "-j", "DROP"])
+
 
             self._execute(["sudo", "iptables", "-A", "FORWARD", "-s", ip, "!", "-o", self.vpn_iface, "-j", "REJECT"])
         elif profile == "Normal":
