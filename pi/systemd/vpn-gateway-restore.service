@@ -1,0 +1,14 @@
+[Unit]
+Description=Restore selected VPN gateway server and device profiles
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+Requires=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vpn-gateway-cli vpn restore --json
+ExecStart=/usr/local/bin/vpn-gateway-cli device restore --json
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

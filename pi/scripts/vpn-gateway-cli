@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fixed root-owned wrapper; the Python CLI validates all accepted subcommands.
+exec /opt/vpn-gateway/venv/bin/vpn-gateway-cli "$@"

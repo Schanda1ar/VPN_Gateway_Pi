@@ -4,6 +4,9 @@ import json
 import os
 import time
 import platform
+import ipaddress
+import shlex
+import tempfile
 
 from pathlib import Path
 from loguru import logger
@@ -30,14 +33,13 @@ class GatewayManager:
         self.device_file = BASE_DIR / "devices.json"
         # VPN Tabelle und lokales Netzwerk aus der Basis-Konfiguration laden
         self.vpn_table = self.base_config.get("vpn_table_id", "100")
-        self.local_net = self.base_config.get("local_network", "192.168.178.0/24")
+        self.local_net = str(ipaddress.ip_network(self.base_config.get("local_network", "192.168.178.0/24"), strict=False))
         is_linux = platform.system() == "Linux"
-        self.dry_run = self.base_config.get("dry_run", True)
+        self.dry_run = bool(self.base_config.get("dry_run", True))
         
         # Geräteinformationen laden
         self.devices = self._load_json(self.device_file)
-        print(self.dry_run)
-        if is_linux is True or self.dry_run != "True":
+        if is_linux and not self.dry_run:
             self._prepare_system()
 
     def _prepare_system(self):
@@ -63,16 +65,15 @@ class GatewayManager:
             logger.info(f"Initialisiere Routing-Tabelle {self.vpn_table}...")
             self._execute(["sudo", "ip", "route", "replace", "default", "dev", self.vpn_iface, "table", self.vpn_table])
             # ----------------------------------------
-
+            self._execute(["sudo", "ip", "route", "replace", "10.64.0.1", "dev", self.vpn_iface])
             logger.success(f"WireGuard Interface '{self.vpn_iface}' und Tabelle {self.vpn_table} sind bereit.")
 
         if not found_iface:
             logger.critical("WireGuard Interface wurde nicht gefunden! Abbruch.")
-            input("Drücke Enter zum Beenden...")
-            sys.exit(1)
+            raise RuntimeError("WireGuard Interface wurde nicht gefunden")
         mss_rule = ["FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu"]
         check_cmd = ["sudo", "iptables", "-t", "mangle", "-C" ] + mss_rule
-        add_cmd = ["sudo", "iptables", "-t", "mangle", "-A" ] + mss_rule
+        add_cmd = ["sudo", "iptables", "-t", "mangle", "-I" ] + mss_rule
         
         if self.dry_run:
             logger.info("[Dry-Run] Würde MSS-Clamping Regel prüfen/setzen.")
@@ -122,18 +123,25 @@ class GatewayManager:
             return {}
 
     def _save_device_config(self):
-        """Speichert den aktuellen Zustand der Profile in der JSON."""
-        if self.dry_run:
-            logger.debug(f"[DRY-RUN] Speichere JSON nach {self.device_file}")
-            with open(self.device_file, 'w') as f:
-                json.dump(self.devices, f, indent=4)
-        else:
-            try:
-                with open(self.device_file, 'w', encoding='utf-8') as f:
-                    json.dump(self.devices, f, indent=4, ensure_ascii=False)
-                logger.debug("Konfiguration gespeichert.")
-            except Exception as e:
-                logger.error(f"Fehler beim Speichern der JSON: {e}")
+        """Speichert Profile atomar und bewahrt die vorherige JSON als Backup."""
+        temporary_path = None
+        try:
+            payload = json.dumps(self.devices, indent=4, ensure_ascii=False) + "\n"
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.device_file.parent, delete=False) as handle:
+                temporary_path = Path(handle.name)
+                os.chmod(temporary_path, 0o600)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if self.device_file.exists():
+                self.device_file.with_suffix(self.device_file.suffix + ".bak").write_bytes(self.device_file.read_bytes())
+            os.replace(temporary_path, self.device_file)
+            logger.debug("Konfiguration atomar gespeichert.")
+        except Exception as e:
+            if temporary_path:
+                temporary_path.unlink(missing_ok=True)
+            logger.error(f"Fehler beim Speichern der JSON: {e}")
+            raise
 
     def _get_vpn_interface(self) -> str:
         """Findet das aktive WireGuard Interface (z.B. wg0)."""
@@ -144,10 +152,10 @@ class GatewayManager:
             if not vpn_ifs:
                 vpn_ifs = [i for i in interfaces if i.startswith('tun')]
                 
-            return vpn_ifs[0] if vpn_ifs else "eth0"
+            return vpn_ifs[0] if vpn_ifs else ""
         except Exception as e:
             logger.error(f"Fehler beim Lesen der Interfaces: {e}")
-            return "eth0"
+            return ""
 
     def _ensure_ip_forwarding(self):
         """Aktiviert das IP-Forwarding im Linux-Kernel."""
@@ -184,8 +192,8 @@ class GatewayManager:
         else:
             logger.debug(f"NAT für {vpn_iface} ist bereits konfiguriert.")
 
-    def _execute(self, cmd_raw: list):
-        """Führt einen Shell-Befehl aus und gibt das Ergebnis zurück."""
+    def _execute(self, cmd_raw: list, timeout: int = 15):
+        """Führt einen bekannten Systembefehl ohne Shell und mit Timeout aus."""
         if self.dry_run:
             logger.debug(f"[DRY-RUN] Executing: {cmd_raw}")
             return None # Simuliere Erfolg
@@ -193,10 +201,12 @@ class GatewayManager:
             try:
                 cmd = [str(arg) for arg in cmd_raw]
                 # check=False verhindert den Absturz bei Fehlern (z.B. Regel nicht gefunden)
-                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
                 if result.returncode != 0:
                     logger.debug(f"Info: Befehl {cmd[1:3]} nicht kritisch: {result.stderr.strip()}")
                 return result
+            except subprocess.TimeoutExpired:
+                logger.error(f"Timeout bei Systemaufruf: {cmd_raw[0]}")
             except Exception as e:
                 logger.error(f"Kritischer Fehler bei Systemaufruf: {e}")
 
@@ -205,6 +215,10 @@ class GatewayManager:
         Wendet ein Routing-Profil auf eine IP an. 
         Legt das Gerät an, falls es noch nicht existiert.
         """
+        ip = str(ipaddress.ip_address(ip))
+        if profile not in ["Normal", "VPN", "Sicher", "Sniff"]:
+            raise ValueError(f"Unbekanntes Profil: {profile}")
+
         if ip not in self.devices and update_json is True:
             logger.info(f"Neues Gerät erkannt. Initialisiere {ip}...")
             self.devices[ip] = {"name": name if name else ip, "profile": profile}
@@ -296,16 +310,19 @@ class GatewayManager:
 
 
     def _clear_all_rules_for_ip(self, ip: str):
+        """Entfernt nur bekannte gerätebezogene Regeln ohne Shell-Pipelines."""
         for table in ["filter", "nat", "mangle"]:
-        # Dieser Befehl findet alle Ketten, in denen die IP vorkommt
-            cmd = f"sudo iptables -t {table} -S | grep {ip} | sed -e 's/-A/-D/' -e 's/-I/-D/'"
-            rules = subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
-            
-            if rules:
-                for rule in rules.split('\n'):
-                    # Führe das Löschen aus: sudo iptables -t [table] -D ...
-                    full_cmd = f"sudo iptables -t {table} {rule}"
-                    subprocess.run(full_cmd, shell=True)
+            result = self._execute(["sudo", "iptables", "-t", table, "-S"])
+            if not result:
+                continue
+            for line in result.stdout.splitlines():
+                parts = shlex.split(line)
+                if len(parts) < 4 or parts[0] != "-A":
+                    continue
+                source = parts.index("-s") + 1 if "-s" in parts else None
+                if source is None or source >= len(parts) or parts[source].split("/")[0] != ip:
+                    continue
+                self._execute(["sudo", "iptables", "-t", table, "-D", *parts[1:]])
                 
         logger.success(f"Alle iptables-Leichen für {ip} wurden entfernt.")
 
