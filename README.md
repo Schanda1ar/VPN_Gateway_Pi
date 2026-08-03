@@ -19,6 +19,29 @@ uv run python gui_main.py
 
 Die GUI benötigt einen SSH-Schlüssel, eine vorhandene `known_hosts`-Datei und den SHA256-Fingerprint des Pi-Host-Keys. Sie akzeptiert keine freien Shell- oder Firewall-Befehle.
 
+### Ein-Klick-Einrichtung über die GUI
+
+Auf der Seite **Einstellungen** wird der Button **CLI und Gateway installieren/aktualisieren** erst nach einem erfolgreichen SSH-Test freigeschaltet.
+
+Der Ablauf ist fest vorgegeben und läuft im Hintergrund:
+
+1. Die GUI prüft SSH unabhängig davon, ob `vpn-gateway-cli` bereits installiert ist.
+2. Die GUI prüft die installierte CLI-Version. Eine fehlende oder ältere CLI wird aus dem fest im GUI-Build enthaltenen Installationspaket installiert beziehungsweise aktualisiert.
+3. Das Paket wird als normaler SSH-Benutzer in ein privates temporäres Verzeichnis übertragen.
+4. Wenn der Pi keine kennwortlose Installation erlaubt, fragt die GUI das sudo-Passwort verdeckt ab. Es wird nur für diesen Installationsprozess im Arbeitsspeicher gehalten, nicht gespeichert und nicht als Kommandozeilenargument übertragen.
+5. `install.sh --activate --harden-sudo` installiert Skripte und Dienste, migriert den aktiven WireGuard-Peer, aktiviert den Restore-Dienst und begrenzt anschließend die sudo-Regel wieder auf die feste CLI.
+6. Ist bereits dieselbe oder eine neuere kompatible CLI installiert, wird `system setup` idempotent ausgeführt. Dabei werden die verwalteten Ordner geprüft beziehungsweise angelegt und VPN- sowie Geräteprofile erneut angewendet.
+
+`config.json` und `devices.json` des vorhandenen Gateways werden dabei nicht ersetzt. Der Benutzer muss zu keinem Zeitpunkt ein Terminal auf dem Pi öffnen. Nach der Härtung laufen erneute Einrichtungen derselben Version über den begrenzten CLI-Befehl `system setup`; eine spätere CLI-Aktualisierung kann wieder vollständig aus der GUI erfolgen und fragt bei Bedarf erneut nach dem sudo-Passwort.
+
+Für einen Windows-Single-File-Build inklusive des geprüften Pi-Payloads:
+
+```powershell
+uv run pyinstaller --clean vpn_gateway_gui.spec
+```
+
+Die fertige Datei liegt anschließend unter `dist/VpnGatewayManager.exe`.
+
 ## Pi-Installation
 
 Zunächst nur installieren und den aktuellen Peer in `migrated-current` übernehmen:
