@@ -19,6 +19,27 @@ uv run python gui_main.py
 
 Die GUI benötigt einen SSH-Schlüssel, eine vorhandene `known_hosts`-Datei und den SHA256-Fingerprint des Pi-Host-Keys. Sie akzeptiert keine freien Shell- oder Firewall-Befehle.
 
+### Ein-Klick-Einrichtung über die GUI
+
+Auf der Seite **Einstellungen** wird der Button **Gateway vollständig einrichten** erst nach einem erfolgreichen SSH-Test freigeschaltet.
+
+Der Ablauf ist fest vorgegeben und läuft im Hintergrund:
+
+1. Die GUI prüft SSH unabhängig davon, ob `vpn-gateway-cli` bereits installiert ist.
+2. Bei einer vorhandenen CLI wird `system setup` idempotent ausgeführt. Dabei werden die verwalteten Ordner geprüft beziehungsweise angelegt und VPN- sowie Geräteprofile erneut angewendet.
+3. Auf einem noch nicht eingerichteten Pi überträgt die GUI ausschließlich die fest im Build enthaltenen Projektdateien in ein temporäres Verzeichnis.
+4. `install.sh --activate --harden-sudo` installiert Skripte und Dienste, migriert den aktiven WireGuard-Peer, aktiviert den Restore-Dienst und begrenzt anschließend die sudo-Regel wieder auf die feste CLI.
+
+`config.json` und `devices.json` des vorhandenen Gateways werden dabei nicht ersetzt. Für die erstmalige Installation muss der SSH-Benutzer `sudo -n` verwenden dürfen. Nach der Härtung laufen erneute Klicks über den begrenzten CLI-Befehl `system setup` und benötigen keine freie Root-Shell.
+
+Für einen Windows-Single-File-Build inklusive des geprüften Pi-Payloads:
+
+```powershell
+uv run pyinstaller --clean vpn_gateway_gui.spec
+```
+
+Die fertige Datei liegt anschließend unter `dist/VpnGatewayManager.exe`.
+
 ## Pi-Installation
 
 Zunächst nur installieren und den aktuellen Peer in `migrated-current` übernehmen:

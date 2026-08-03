@@ -24,7 +24,7 @@ REPOSITORY_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 INSTALL_ROOT=/opt/vpn-gateway
 LEGACY_DIR=${VPN_GATEWAY_LEGACY_DIR:-/home/pi/vpn-gateway}
 
-install -d -m 0750 "$INSTALL_ROOT" "$INSTALL_ROOT/config" "$INSTALL_ROOT/state"
+install -d -m 0750 "$INSTALL_ROOT" "$INSTALL_ROOT/config" "$INSTALL_ROOT/state" "$INSTALL_ROOT/logs" "$INSTALL_ROOT/backups"
 python3 -m venv "$INSTALL_ROOT/venv"
 "$INSTALL_ROOT/venv/bin/pip" install --disable-pip-version-check --upgrade --force-reinstall "$REPOSITORY_ROOT"
 install -o root -g root -m 0755 "$SCRIPT_DIR/vpn-gateway-cli" /usr/local/bin/vpn-gateway-cli

@@ -47,3 +47,18 @@ class GatewayPaths:
     def current_server(self) -> Path:
         """Return the selected-server state location."""
         return self.state_dir / "current_vpn_server.json"
+
+    @property
+    def install_root(self) -> Path:
+        """Return the application-owned installation root."""
+        return self.config_dir.parent
+
+    @property
+    def logs_dir(self) -> Path:
+        """Return the application-owned log directory."""
+        return self.install_root / "logs"
+
+    @property
+    def backups_dir(self) -> Path:
+        """Return the application-owned backup directory."""
+        return self.install_root / "backups"

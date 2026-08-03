@@ -20,7 +20,7 @@ from .repositories import DeviceRepository, ServerRepository, StateRepository
 from .services import DeviceProfileService, EffectiveRulesService, ServerManagementService, VpnService
 from .wireguard import HealthChecker, WireGuardClient
 
-API_VERSION = 1
+API_VERSION = 2
 
 
 @dataclass
@@ -143,6 +143,30 @@ def status(services: Services) -> dict:
     }
 
 
+def setup_gateway(services: Services) -> dict:
+    """Idempotently create application folders and apply all active gateway rules."""
+    paths = services.server_management.paths
+    missing = [str(path) for path in (paths.legacy_config, paths.legacy_devices) if not path.is_file()]
+    if missing:
+        raise GatewayError(
+            "CONFIG_NOT_FOUND",
+            "Die bestehende Gateway-Konfiguration ist unvollständig",
+            details={"missing": missing},
+        )
+    directories = (paths.config_dir, paths.state_dir, paths.logs_dir, paths.backups_dir)
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+        directory.chmod(0o750)
+    vpn_result = services.vpn.restore()
+    services.device_profiles.restore()
+    return {
+        "configured": True,
+        "directories": [str(directory) for directory in directories],
+        "vpn": vpn_result,
+        "device_profiles_restored": True,
+    }
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create the fixed, non-shell CLI command surface."""
     def json_option(command: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -153,6 +177,10 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="resource", required=True)
     json_option(subparsers.add_parser("version"))
     json_option(subparsers.add_parser("status"))
+
+    system = subparsers.add_parser("system")
+    system_sub = system.add_subparsers(dest="action", required=True)
+    json_option(system_sub.add_parser("setup"))
 
     server = subparsers.add_parser("server")
     server_sub = server.add_subparsers(dest="action", required=True)
@@ -194,6 +222,8 @@ def dispatch(arguments: argparse.Namespace, services: Services) -> dict:
     require_root()
     if arguments.resource == "status":
         return status(services)
+    if arguments.resource == "system":
+        return setup_gateway(services)
     if arguments.resource == "server":
         if arguments.action == "list":
             return {"servers": [server.to_dict() for server in services.server_management.list()], "active_server_id": services.state.get_active_server_id()}
