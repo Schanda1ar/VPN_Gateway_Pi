@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -69,7 +70,7 @@ class GatewayController(QObject):
         self,
         operation: Callable[[GatewayClient], dict],
         completed: Callable[[dict], None],
-        failed: Callable[[Exception], None] | None = None,
+        failed: Callable[[Exception], bool | None] | None = None,
     ) -> None:
         """Run a GatewayClient method while preventing competing UI actions."""
         self.busy += 1
@@ -85,10 +86,10 @@ class GatewayController(QObject):
         self._finish_task(task_id)
         callback(result)
 
-    def _failed(self, task_id: int, error: Exception, callback: Callable[[Exception], None] | None) -> None:
+    def _failed(self, task_id: int, error: Exception, callback: Callable[[Exception], bool | None] | None) -> None:
         self._finish_task(task_id)
-        if callback:
-            callback(error)
+        if callback and callback(error):
+            return
         if isinstance(error, RemoteGatewayError):
             details = error.details.get("stderr", "").strip()
             message = str(error) if not details else f"{error}\n\n{details}"
@@ -251,7 +252,7 @@ class MainWindow(QMainWindow):
         save.clicked.connect(lambda: self.save_settings())
         test = QPushButton("Verbindung testen")
         test.clicked.connect(self.test_connection)
-        self.install_button = QPushButton("Gateway vollständig einrichten")
+        self.install_button = QPushButton("CLI und Gateway installieren/aktualisieren")
         self.install_button.setEnabled(False)
         self.install_button.clicked.connect(self.install_gateway)
         buttons.addWidget(save)
@@ -417,7 +418,7 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(
             self,
             "Gateway einrichten",
-            "Alle benötigten Gateway-Skripte, Dienste und Ordner werden auf dem Pi eingerichtet. "
+            "Die CLI sowie alle benötigten Gateway-Skripte, Dienste und Ordner werden auf dem Pi installiert oder aktualisiert. "
             "Vorhandene Geräte- und Gateway-Konfigurationen bleiben erhalten. Fortfahren?",
         )
         if answer != QMessageBox.Yes:
@@ -426,7 +427,31 @@ class MainWindow(QMainWindow):
         self.controller.request(
             lambda client: client.install_gateway(),
             self._install_completed,
+            self._install_failed,
         )
+
+    def _install_failed(self, error: Exception) -> bool:
+        """Request a transient sudo password only when the Pi requires it."""
+        if not isinstance(error, RemoteGatewayError) or error.code != "SUDO_PASSWORD_REQUIRED":
+            return False
+        password, accepted = QInputDialog.getText(
+            self,
+            "sudo-Berechtigung benötigt",
+            "sudo-Passwort des Pi-Benutzers (wird nicht gespeichert):",
+            QLineEdit.Password,
+        )
+        if not accepted:
+            self.statusBar().showMessage("Installation abgebrochen")
+            return True
+        if not password:
+            QMessageBox.warning(self, "sudo-Passwort", "Für die Installation wurde kein Passwort eingegeben.")
+            return True
+        self.statusBar().showMessage("CLI und Gateway werden installiert …")
+        self.controller.request(
+            lambda client: client.install_gateway(password),
+            self._install_completed,
+        )
+        return True
 
     def _install_completed(self, response: dict) -> None:
         self.connection_label.setText("Verbunden und eingerichtet")
