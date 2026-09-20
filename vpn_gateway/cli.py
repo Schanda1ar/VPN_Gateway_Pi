@@ -14,6 +14,7 @@ from . import __version__
 from .command_runner import CommandRunner
 from .errors import GatewayError
 from .gateway_adapter import GatewayAdapter
+from .host_routing import HostRoutingService
 from .models import Server
 from .paths import GatewayPaths
 from .repositories import DeviceRepository, ServerRepository, StateRepository
@@ -32,6 +33,7 @@ class Services:
     device_profiles: DeviceProfileService
     effective_rules: EffectiveRulesService
     vpn: VpnService
+    host_routing: HostRoutingService
     state: StateRepository
     wireguard: WireGuardClient
 
@@ -45,12 +47,14 @@ def build_services() -> Services:
     devices = DeviceRepository(paths)
     adapter = GatewayAdapter(paths, runner)
     wireguard = WireGuardClient(runner)
+    host_routing = HostRoutingService(paths.legacy_config, runner, interface=wireguard.interface)
     return Services(
         server_management=ServerManagementService(paths, servers, state),
         devices=devices,
         device_profiles=DeviceProfileService(paths, devices, adapter),
         effective_rules=EffectiveRulesService(devices, runner),
-        vpn=VpnService(paths, servers, state, wireguard, HealthChecker()),
+        vpn=VpnService(paths, servers, state, wireguard, HealthChecker(), host_routing),
+        host_routing=host_routing,
         state=state,
         wireguard=wireguard,
     )
@@ -170,6 +174,10 @@ def create_parser() -> argparse.ArgumentParser:
     switch.add_argument("--server-id", required=True)
     json_option(vpn_sub.add_parser("restore"))
 
+    host = subparsers.add_parser("host")
+    host_sub = host.add_subparsers(dest="action", required=True)
+    json_option(host_sub.add_parser("restore"))
+
     device = subparsers.add_parser("device")
     device_sub = device.add_subparsers(dest="action", required=True)
     json_option(device_sub.add_parser("list"))
@@ -207,6 +215,8 @@ def dispatch(arguments: argparse.Namespace, services: Services) -> dict:
         return migrate_current_server(services)
     if arguments.resource == "vpn":
         return services.vpn.switch(arguments.server_id) if arguments.action == "switch" else services.vpn.restore()
+    if arguments.resource == "host":
+        return services.host_routing.restore()
     if arguments.resource == "device":
         if arguments.action == "list":
             return {"devices": [device.to_dict() for device in services.devices.list()]}

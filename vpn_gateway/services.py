@@ -9,6 +9,7 @@ from loguru import logger
 
 from .errors import GatewayError
 from .gateway_adapter import GatewayAdapter
+from .host_routing import HostRoutingService
 from .locking import ProcessLock
 from .models import Device, Server, validate_identifier, validate_profile
 from .paths import GatewayPaths
@@ -147,12 +148,21 @@ class EffectiveRulesService:
 class VpnService:
     """Coordinate server selection, WireGuard switch, health check, and state."""
 
-    def __init__(self, paths: GatewayPaths, servers: ServerRepository, state: StateRepository, wireguard: WireGuardClient, health: HealthChecker) -> None:
+    def __init__(
+        self,
+        paths: GatewayPaths,
+        servers: ServerRepository,
+        state: StateRepository,
+        wireguard: WireGuardClient,
+        health: HealthChecker,
+        host_routing: HostRoutingService,
+    ) -> None:
         self.paths = paths
         self.servers = servers
         self.state = state
         self.wireguard = wireguard
         self.health = health
+        self.host_routing = host_routing
 
     def switch(self, server_id: str) -> dict:
         """Switch the active peer and persist only a verified result."""
@@ -165,13 +175,18 @@ class VpnService:
                 raise GatewayError("SERVER_DISABLED", "Server is disabled")
             previous = self.wireguard.capture_runtime_config()
             try:
+                # Install the new endpoint exception before syncconf so a full-tunnel
+                # local policy can never route the WireGuard control socket into wg0.
+                self.host_routing.prepare(server.endpoint)
                 self.wireguard.apply_server(server, previous)
+                self.host_routing.restore()
                 health = self.health.verify(self.wireguard)
                 self.state.save_active_server(server.id)
                 return {"server": server.to_dict(), "health": health, "rolled_back": False}
             except GatewayError as error:
                 try:
                     self.wireguard.restore_runtime_config(previous)
+                    self.host_routing.restore()
                     rollback_health = self.health.verify(self.wireguard)
                 except GatewayError as rollback_error:
                     raise GatewayError("ROLLBACK_FAILED", "VPN switch and rollback both failed") from rollback_error
@@ -186,6 +201,7 @@ class VpnService:
         if server is None:
             raise GatewayError("SERVER_NOT_FOUND", "The saved active server no longer exists")
         if self.wireguard.is_server_active(server):
+            self.host_routing.restore()
             health = self.health.verify_existing(self.wireguard)
             return {"restored": True, "already_active": True, "server": server.to_dict(), "health": health}
         result = self.switch(server_id)

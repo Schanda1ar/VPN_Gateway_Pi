@@ -1658,7 +1658,23 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 ```
 
-Reihenfolge: Netzwerk verfügbar, `wg0` aktiv, ausgewählten VPN-Server wiederherstellen, gespeicherte Geräteprofile anwenden. Scheitert der Dienst nach einem Austausch, stellt der Installer die zuvor gesicherte Unit-Datei wieder her.
+Reihenfolge: Netzwerk verfügbar, `wg0` aktiv, ausgewählten VPN-Server
+wiederherstellen, optionales Pi-local Routing anwenden, gespeicherte
+Geräteprofile anwenden. Scheitert der Dienst nach einem Austausch, stellt der
+Installer die zuvor gesicherte Unit-Datei wieder her.
+
+### 24.2 Optionales Pi-local Routing
+
+Pi-lokale Dienste wie ein headless JDownloader werden nicht als Gerät in
+`devices.json` modelliert. Dafür kann die Pi-eigene `config.json` optional
+einen aktivierten `host_routing`-Block enthalten. Der Verwaltungsdienst nutzt
+dann die fest reservierte Routing-Tabelle `101` und eine lokale
+Policy-Regel für lokal erzeugte Pakete. Die Tabelle enthält eine direkte
+LAN-Route und eine `/32`-Route zum aktuellen WireGuard-Endpoint über `eth0`,
+bevor der Default über `wg0` verwendet wird. Dadurch bleiben LAN-SSH und der
+WireGuard-Control-Traffic erreichbar, während Pi-lokaler Internetverkehr den
+Tunnel nutzt. Die Endpoint-Ausnahme wird beim Restore und vor einem
+WireGuard-Serverwechsel aktualisiert.
 
 ---
 
