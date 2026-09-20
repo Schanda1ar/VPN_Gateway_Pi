@@ -42,7 +42,7 @@ SUPPORTED_API_VERSION = 1
 # Provisioning boundary: replace this empty value with the production
 # Ed25519 public key before deployment. An empty value fails closed; tests
 # must inject their own key through the public_key argument.
-RELEASE_PUBLIC_KEY_HEX = ""
+RELEASE_PUBLIC_KEY_HEX = "d930f72883f7f3658cba9d762b64da1bc696b8be1fdcb6ba52047ec8b78440e9"
 RELEASE_PUBLIC_KEY = b""
 
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
