@@ -74,6 +74,11 @@ def test_release_workflow_build_contract_is_pinned() -> None:
     assert "actions/upload-artifact@v4" in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "needs: [prepare, windows-gui]" in workflow
+    assert "sudo apt-get install --no-install-recommends -y libgl1" in workflow
+    assert "git/ref/tags/${TAG}" in workflow
+    assert "releases/tags/${TAG}" in workflow
+    assert "both remote tag and release are absent; retrying release." in workflow
+    assert "GitHub remote state could not be determined." in workflow
     assert "Require a strictly newer SemVer bump" in workflow
     assert "git push origin \"$TAG\"" not in workflow
     assert Path("VPN-Gateway-Manager.spec").exists()

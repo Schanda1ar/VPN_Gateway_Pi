@@ -31,6 +31,8 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Require a strictly newer SemVer bump
         id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           echo "release=true" >> "$GITHUB_OUTPUT"
@@ -43,10 +45,38 @@ jobs:
             echo "Previous pyproject.toml version is unavailable." >&2
             exit 1
           fi
-          python -c 'import sys; from vpn_gateway.release import parse_semver; sys.exit(0 if parse_semver(sys.argv[1]) > parse_semver(sys.argv[2]) else 1)' "${{ steps.version.outputs.version }}" "$PREVIOUS" || {
-            echo "Version is unchanged or not newer than $PREVIOUS; skipping release."
+          if python -c 'import sys; from vpn_gateway.release import parse_semver; sys.exit(0 if parse_semver(sys.argv[1]) > parse_semver(sys.argv[2]) else 1)' "${{ steps.version.outputs.version }}" "$PREVIOUS"; then
+            exit 0
+          fi
+          if [ "${{ steps.version.outputs.version }}" != "$PREVIOUS" ]; then
+            echo "Version is older than $PREVIOUS; skipping release."
             echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG="v${{ steps.version.outputs.version }}"
+          remote_status() {
+            local response status
+            response="$(gh api --include "$1" 2>/dev/null || true)"
+            status="$(printf '%s\n' "$response" | sed -n 's/^HTTP[^ ]* \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)"
+            if [ -z "$status" ]; then
+              echo "GitHub remote state could not be determined." >&2
+              return 1
+            fi
+            printf '%s\n' "$status"
           }
+          if ! TAG_STATUS="$(remote_status "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")"; then
+            exit 1
+          fi
+          if ! RELEASE_STATUS="$(remote_status "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"; then
+            exit 1
+          fi
+          if [ "$TAG_STATUS" = "404" ] && [ "$RELEASE_STATUS" = "404" ]; then
+            echo "Version is unchanged, but both remote tag and release are absent; retrying release."
+          else
+            echo "Version is unchanged and is already present remotely; skipping release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Refuse mutable tags and releases
         if: steps.bump.outputs.release == 'true'
         env:
@@ -54,14 +84,35 @@ jobs:
         shell: bash
         run: |
           TAG="v${{ steps.version.outputs.version }}"
-          if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then
-            echo "Tag $TAG already exists; releases are immutable." >&2
+          remote_status() {
+            local response status
+            response="$(gh api --include "$1" 2>/dev/null || true)"
+            status="$(printf '%s\n' "$response" | sed -n 's/^HTTP[^ ]* \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)"
+            if [ -z "$status" ]; then
+              echo "GitHub remote state could not be determined." >&2
+              return 1
+            fi
+            printf '%s\n' "$status"
+          }
+          if ! TAG_STATUS="$(remote_status "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")"; then
             exit 1
           fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; refusing replacement." >&2
+          if [ "$TAG_STATUS" != "404" ]; then
+            echo "Tag $TAG already exists or its state could not be determined; refusing replacement." >&2
             exit 1
           fi
+          if ! RELEASE_STATUS="$(remote_status "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"; then
+            exit 1
+          fi
+          if [ "$RELEASE_STATUS" != "404" ]; then
+            echo "Release $TAG already exists or its state could not be determined; refusing replacement." >&2
+            exit 1
+          fi
+      - name: Install Linux GUI runtime
+        if: steps.bump.outputs.release == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libgl1
       - name: Run tests
         if: steps.bump.outputs.release == 'true'
         run: uv run --extra dev --extra gui pytest -q
