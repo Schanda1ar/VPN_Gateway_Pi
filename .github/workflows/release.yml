@@ -113,6 +113,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libgl1
+          sudo ldconfig
+          dpkg-query -W -f='${Status}\n' libgl1
+          test -e /usr/lib/x86_64-linux-gnu/libGL.so.1
+          ldconfig -p | grep -F 'libGL.so.1'
+          python -c "import ctypes; ctypes.CDLL('libGL.so.1'); print('libGL loader OK')"
       - name: Run tests
         if: steps.bump.outputs.release == 'true'
         run: uv run --extra dev --extra gui pytest -q
