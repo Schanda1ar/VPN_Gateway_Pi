@@ -47,3 +47,23 @@ class GatewayPaths:
     def current_server(self) -> Path:
         """Return the selected-server state location."""
         return self.state_dir / "current_vpn_server.json"
+
+    @property
+    def install_root(self) -> Path:
+        """Return the application-owned installation root."""
+        return self.config_dir.parent
+
+    @property
+    def releases_dir(self) -> Path:
+        """Return the versioned release directory used by the Pi updater."""
+        return self.install_root / "releases"
+
+    @property
+    def current_release(self) -> Path:
+        """Return the atomically switched active release link."""
+        return self.releases_dir / "current"
+
+    @property
+    def current_main(self) -> Path:
+        """Return the rule-engine entry point from the active release."""
+        return self.current_release / "runtime" / "main.py"

@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtWidgets import (
@@ -27,7 +32,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vpn_gateway import __version__
+from vpn_gateway.release import FixedReleaseClient, validate_manifest, verify_sha256
+
 from .gateway_client import GatewayClient, RemoteGatewayError, SettingsService, SshSettings
+from .update_helper import UpdateHelperContract
 
 
 class TaskSignals(QObject):
@@ -65,7 +74,12 @@ class GatewayController(QObject):
         self.busy = 0
         self._active_tasks: dict[int, GatewayTask] = {}
 
-    def request(self, operation: Callable[[GatewayClient], dict], completed: Callable[[dict], None]) -> None:
+    def request(
+        self,
+        operation: Callable[[GatewayClient], dict],
+        completed: Callable[[dict], None],
+        failed: Callable[[Exception], None] | None = None,
+    ) -> None:
         """Run a GatewayClient method while preventing competing UI actions."""
         self.busy += 1
         self.busy_changed.emit(True)
@@ -73,19 +87,21 @@ class GatewayController(QObject):
         task_id = id(task)
         self._active_tasks[task_id] = task
         task.signals.completed.connect(lambda value: self._complete(task_id, value, completed))
-        task.signals.failed.connect(lambda error: self._failed(task_id, error))
+        task.signals.failed.connect(lambda error: self._failed(task_id, error, failed))
         self.pool.start(task)
 
     def _complete(self, task_id: int, result: dict, callback: Callable[[dict], None]) -> None:
         self._finish_task(task_id)
         callback(result)
 
-    def _failed(self, task_id: int, error: Exception) -> None:
+    def _failed(self, task_id: int, error: Exception, callback: Callable[[Exception], None] | None = None) -> None:
         self._finish_task(task_id)
         if isinstance(error, RemoteGatewayError):
             QMessageBox.critical(None, error.code, str(error))
         else:
             QMessageBox.critical(None, "Fehler", str(error))
+        if callback is not None:
+            callback(error)
 
     def _finish_task(self, task_id: int) -> None:
         """Release a completed worker only after its UI-thread signal is processed."""
@@ -147,6 +163,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("VPN Gateway Manager")
+        self._available_update_version: str | None = None
         self.settings_service = SettingsService()
         self.settings = self.settings_service.load()
         self.controller = GatewayController(lambda: GatewayClient(self.settings))
@@ -168,14 +185,26 @@ class MainWindow(QMainWindow):
         self.server_label = QLabel("–")
         self.handshake_label = QLabel("–")
         self.device_count_label = QLabel("–")
+        self.gui_version_label = QLabel(__version__)
+        self.pi_version_label = QLabel("–")
+        self.available_version_label = QLabel("–")
+        self.update_status_label = QLabel("Nicht geprüft")
         layout.addRow("Pi-Verbindung", self.connection_label)
         layout.addRow("WireGuard", self.vpn_label)
         layout.addRow("Aktiver Server", self.server_label)
         layout.addRow("Letzter Handshake", self.handshake_label)
         layout.addRow("Geräte", self.device_count_label)
+        layout.addRow("GUI-Version", self.gui_version_label)
+        layout.addRow("Pi-Version", self.pi_version_label)
+        layout.addRow("Verfügbare Version", self.available_version_label)
+        layout.addRow("Update-Status", self.update_status_label)
         refresh = QPushButton("Aktualisieren")
         refresh.clicked.connect(self.refresh_dashboard)
         layout.addRow(refresh)
+        self.install_update_button = QPushButton("Update installieren")
+        self.install_update_button.setDisabled(True)
+        self.install_update_button.clicked.connect(self.install_update)
+        layout.addRow(self.install_update_button)
         self.tabs.addTab(page, "Dashboard")
 
     def _build_servers(self) -> None:
@@ -261,6 +290,7 @@ class MainWindow(QMainWindow):
         self.refresh_dashboard()
         self.refresh_servers()
         self.refresh_devices()
+        self.refresh_update()
 
     def refresh_dashboard(self) -> None:
         self.controller.request(lambda client: client.get_status(), self._show_status)
@@ -272,6 +302,79 @@ class MainWindow(QMainWindow):
         self.server_label.setText(data["vpn"].get("server_id") or "Nicht migriert")
         self.handshake_label.setText(str(data["vpn"].get("latest_handshake_epoch", 0)))
         self.device_count_label.setText(str(data["devices"]["total"]))
+
+    def refresh_update(self) -> None:
+        """Fetch the signed Pi release status for the dashboard update area."""
+        self.controller.request(lambda client: client.check_update(), self._show_update_status, self._show_update_error)
+
+    def _show_update_status(self, response: dict) -> None:
+        """Render update availability while leaving incompatible releases hidden."""
+        installed = response.get("installed_version") or "Unbekannt"
+        available = response.get("available_version")
+        self.pi_version_label.setText(str(installed))
+        self.available_version_label.setText(str(available or "Aktuell"))
+        self.update_status_label.setText("Update verfügbar" if available else "Aktuell")
+        self._available_update_version = str(available) if available else None
+        self.install_update_button.setEnabled(self._available_update_version is not None)
+
+    def _show_update_error(self, error: Exception) -> None:
+        """Make incompatible signed releases explicit without offering them."""
+        self._available_update_version = None
+        self.install_update_button.setDisabled(True)
+        if isinstance(error, RemoteGatewayError) and error.code == "INCOMPATIBLE_API":
+            self.available_version_label.setText("Nicht kompatibel")
+            self.update_status_label.setText("Release nicht kompatibel")
+
+    def install_update(self) -> None:
+        """Update the Pi first, then hand the GUI package to the helper."""
+        version = self._available_update_version
+        if not version:
+            return
+        self.install_update_button.setDisabled(True)
+        self.update_status_label.setText("Pi-Update wird installiert …")
+        self.controller.request(lambda client: client.apply_update(version), lambda _: self._prepare_gui_update(version))
+
+    def _prepare_gui_update(self, version: str) -> None:
+        """Prepare a fixed-endpoint GUI package after the Pi health check passed."""
+        self.update_status_label.setText("GUI-Update wird vorbereitet …")
+        self.controller.request(lambda _client: self._download_gui_update(version), self._launch_gui_helper)
+
+    def _download_gui_update(self, version: str) -> dict:
+        """Download and verify the signed GUI artifact without accepting a URL."""
+        client = FixedReleaseClient()
+        raw, signature = client.fetch_versioned_manifest(version)
+        manifest = validate_manifest(raw, signature)
+        artifact = next(
+            (item for key, item in manifest.artifacts.items() if key in {"gui_zip", "gui-zip", "gui"}),
+            None,
+        )
+        if artifact is None:
+            raise RuntimeError("Das signierte GUI-Artefakt fehlt")
+        package = Path(tempfile.gettempdir()) / f"vpn-gateway-gui-{version}.zip"
+        client.download_artifact(artifact, package)
+        verify_sha256(package, artifact.sha256)
+        health_file = Path(tempfile.gettempdir()) / "vpn-gateway-manager.ready"
+        health_file.unlink(missing_ok=True)
+        contract = UpdateHelperContract(
+            package=package,
+            version=version,
+            install_root=Path(os.environ.get("APPDATA", Path.home())) / "VpnGatewayManager",
+            executable="VPN-Gateway-Manager.exe",
+            sha256=artifact.sha256,
+            parent_pid=os.getpid(),
+            health_file=health_file,
+        )
+        return {"argv": contract.argv()}
+
+    def _launch_gui_helper(self, payload: dict) -> None:
+        """Start the fixed helper contract and close this GUI instance."""
+        bundled_helper = Path(sys.executable).resolve().parent / "VPN-Gateway-Manager-update-helper.exe"
+        helper_command = [str(bundled_helper)] if bundled_helper.exists() else [sys.executable, "-m", "vpn_gateway_gui.update_helper"]
+        subprocess.Popen([*helper_command, *payload["argv"]], close_fds=True)
+        self.update_status_label.setText("GUI wird neu gestartet …")
+        application = QApplication.instance()
+        if application is not None:
+            application.quit()
 
     def refresh_servers(self) -> None:
         self.controller.request(lambda client: client.list_servers(), self._show_servers)
@@ -367,4 +470,7 @@ def main() -> int:
     window = MainWindow()
     window.resize(920, 600)
     window.show()
+    health_file = os.environ.get("VPN_GATEWAY_GUI_HEALTH_FILE")
+    if health_file:
+        Path(health_file).write_text("ready\n", encoding="utf-8")
     return application.exec()

@@ -19,6 +19,7 @@ from .models import Server
 from .paths import GatewayPaths
 from .repositories import DeviceRepository, ServerRepository, StateRepository
 from .services import DeviceProfileService, EffectiveRulesService, ServerManagementService, VpnService
+from .updater import PiUpdater
 from .wireguard import HealthChecker, WireGuardClient
 
 API_VERSION = 1
@@ -36,6 +37,7 @@ class Services:
     host_routing: HostRoutingService
     state: StateRepository
     wireguard: WireGuardClient
+    updater: PiUpdater | None = None
 
 
 def build_services() -> Services:
@@ -57,6 +59,7 @@ def build_services() -> Services:
         host_routing=host_routing,
         state=state,
         wireguard=wireguard,
+        updater=PiUpdater(paths),
     )
 
 
@@ -149,8 +152,8 @@ def status(services: Services) -> dict:
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the fixed, non-shell CLI command surface."""
-    def json_option(command: argparse.ArgumentParser) -> argparse.ArgumentParser:
-        command.add_argument("--json", action="store_true", help="Return the mandatory JSON response")
+    def json_option(command: argparse.ArgumentParser, *, required: bool = False) -> argparse.ArgumentParser:
+        command.add_argument("--json", action="store_true", required=required, help="Return the mandatory JSON response")
         return command
 
     parser = argparse.ArgumentParser(prog="vpn-gateway-cli")
@@ -192,6 +195,12 @@ def create_parser() -> argparse.ArgumentParser:
     diagnostics_sub = diagnostics.add_subparsers(dest="action", required=True)
     rules = json_option(diagnostics_sub.add_parser("rules"))
     rules.add_argument("--device-id", required=True)
+
+    update = subparsers.add_parser("update")
+    update_sub = update.add_subparsers(dest="action", required=True)
+    json_option(update_sub.add_parser("check"), required=True)
+    apply = json_option(update_sub.add_parser("apply"), required=True)
+    apply.add_argument("--version", required=True)
     return parser
 
 
@@ -202,6 +211,12 @@ def dispatch(arguments: argparse.Namespace, services: Services) -> dict:
     require_root()
     if arguments.resource == "status":
         return status(services)
+    if arguments.resource == "update":
+        if services.updater is None:
+            services.updater = PiUpdater()
+        if arguments.action == "check":
+            return services.updater.check()
+        return services.updater.apply(arguments.version)
     if arguments.resource == "server":
         if arguments.action == "list":
             return {"servers": [server.to_dict() for server in services.server_management.list()], "active_server_id": services.state.get_active_server_id()}

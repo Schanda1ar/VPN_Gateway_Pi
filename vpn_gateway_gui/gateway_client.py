@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from vpn_gateway.models import validate_identifier, validate_profile
+from vpn_gateway.release import parse_semver
 
 WINDOWS_NO_CONSOLE = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+FIXED_CLI_PATH = "/usr/local/bin/vpn-gateway-cli"
 
 
 class RemoteGatewayError(RuntimeError):
@@ -35,7 +37,7 @@ class SshSettings:
     known_hosts_path: str = str(Path.home() / ".ssh" / "known_hosts")
     host_key_fingerprint: str = ""
     timeout_seconds: int = 15
-    cli_path: str = "/usr/local/bin/vpn-gateway-cli"
+    cli_path: str = FIXED_CLI_PATH
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "SshSettings":
@@ -80,6 +82,7 @@ class SshClient:
 
     def execute(self, command: list[str], stdin_json: dict | None = None) -> dict:
         """Execute a fixed CLI command and validate exactly one JSON response."""
+        self._validate_command(command)
         self._validate_settings()
         self._verify_fingerprint()
         remote = "sudo -n " + shlex.quote(self.settings.cli_path)
@@ -126,9 +129,29 @@ class SshClient:
             raise RemoteGatewayError(payload.get("error_code", "REMOTE_COMMAND_FAILED"), payload.get("message", "Remote command failed"), payload.get("details"))
         return payload
 
+    @staticmethod
+    def _validate_command(command: list[str]) -> None:
+        """Fail closed if a caller attempts a command outside the fixed API."""
+        allowed_roots = {
+            ("version",), ("status",), ("server", "list"), ("server", "add"),
+            ("server", "update"), ("server", "delete"), ("server", "migrate-current"),
+            ("vpn", "switch"), ("vpn", "restore"), ("host", "restore"),
+            ("device", "list"), ("device", "show"), ("device", "set-profile"),
+            ("device", "restore"), ("diagnostics", "rules"), ("update", "check"),
+            ("update", "apply"),
+        }
+        root = tuple(command[:2]) if len(command) >= 2 else tuple(command)
+        if root not in allowed_roots:
+            raise RemoteGatewayError("COMMAND_NOT_ALLOWED", "The requested gateway command is not allowed")
+        for part in command:
+            if any(character in part for character in ("\x00", "\r", "\n")):
+                raise RemoteGatewayError("COMMAND_NOT_ALLOWED", "The requested gateway command is invalid")
+
     def _validate_settings(self) -> None:
         if not self.settings.host or not self.settings.private_key_path:
             raise RemoteGatewayError("SSH_CONNECTION_FAILED", "Host and private key path are required")
+        if self.settings.cli_path != FIXED_CLI_PATH:
+            raise RemoteGatewayError("COMMAND_NOT_ALLOWED", "The gateway CLI path is fixed")
         if not Path(self.settings.known_hosts_path).exists():
             raise RemoteGatewayError("SSH_HOST_KEY_MISMATCH", "Configured known_hosts file does not exist")
         if not self.settings.host_key_fingerprint.startswith("SHA256:"):
@@ -192,3 +215,12 @@ class GatewayClient:
     def get_effective_rules(self, device_id: str) -> dict:
         """Fetch read-only effective-rule diagnostics for one device."""
         return self.ssh.execute(["diagnostics", "rules", "--device-id", validate_identifier(device_id, "device_id")])
+
+    def check_update(self) -> dict:
+        """Fetch the signed release availability from the Pi updater."""
+        return self.ssh.execute(["update", "check", "--json"])
+
+    def apply_update(self, version: str) -> dict:
+        """Apply one exact SemVer release through the fixed Pi updater command."""
+        parse_semver(version)
+        return self.ssh.execute(["update", "apply", "--version", version, "--json"])

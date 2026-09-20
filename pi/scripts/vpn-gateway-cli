@@ -1,3 +1,4 @@
 #!/bin/sh
 # Fixed root-owned wrapper; the Python CLI validates all accepted subcommands.
-exec /opt/vpn-gateway/venv/bin/vpn-gateway-cli "$@"
+# The current symlink is switched atomically by the signed updater.
+exec /opt/vpn-gateway/releases/current/venv/bin/vpn-gateway-cli "$@"

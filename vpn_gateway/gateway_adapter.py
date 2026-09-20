@@ -20,10 +20,9 @@ class GatewayAdapter:
         self.paths = paths
         self.runner = runner or CommandRunner()
 
-    def apply_profile(self, device: Device, profile: str) -> None:
-        """Apply a supported profile through the retained GatewayManager API."""
-        validate_profile(profile)
-        module_path = self.paths.legacy_dir / "main.py"
+    def _load_legacy_module(self):
+        """Load the rule engine from the active release while retaining data paths."""
+        module_path = self.paths.current_main if self.paths.current_main.exists() else self.paths.legacy_dir / "main.py"
         if not module_path.exists():
             raise GatewayError("CONFIG_NOT_FOUND", "Existing gateway implementation was not found")
         spec = importlib.util.spec_from_file_location("legacy_gateway_main", module_path)
@@ -31,17 +30,23 @@ class GatewayAdapter:
             raise GatewayError("INTERNAL_ERROR", "Could not load existing gateway implementation")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        # main.py historically derives devices.json from its own directory.
+        # Keep that mutable runtime data in the legacy directory when the code
+        # itself is served from a versioned release.
+        module.BASE_DIR = self.paths.legacy_dir
+        module.BASE_CONFIG_PATH = self.paths.legacy_config
+        return module
+
+    def apply_profile(self, device: Device, profile: str) -> None:
+        """Apply a supported profile through the retained GatewayManager API."""
+        validate_profile(profile)
+        module = self._load_legacy_module()
         manager = module.GatewayManager(self.paths.legacy_config)
         manager.apply_profile(device.ip_address, profile, device.name, update_json=True)
 
     def restore_legacy_devices(self) -> None:
         """Reapply all legacy profiles after a failed profile transition."""
-        module_path = self.paths.legacy_dir / "main.py"
-        spec = importlib.util.spec_from_file_location("legacy_gateway_main", module_path)
-        if spec is None or spec.loader is None:
-            raise GatewayError("INTERNAL_ERROR", "Could not load existing gateway implementation")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = self._load_legacy_module()
         module.GatewayManager(self.paths.legacy_config).init_all_devices()
 
     def legacy_snapshot(self) -> bytes:

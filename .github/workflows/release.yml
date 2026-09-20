@@ -1,0 +1,187 @@
+name: Signed release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.bump.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v5
+      - name: Read and validate version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          python -c 'import re,sys; sys.exit(0 if re.fullmatch(r"(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)", sys.argv[1]) else 1)' "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Require a strictly newer SemVer bump
+        id: bump
+        shell: bash
+        run: |
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          BEFORE="${{ github.event.before }}"
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            exit 0
+          fi
+          PREVIOUS=$(git show "$BEFORE:pyproject.toml" 2>/dev/null | python -c 'import sys,tomllib; print(tomllib.load(sys.stdin.buffer)["project"]["version"])' || true)
+          if [ -z "$PREVIOUS" ]; then
+            echo "Previous pyproject.toml version is unavailable." >&2
+            exit 1
+          fi
+          python -c 'import sys; from vpn_gateway.release import parse_semver; sys.exit(0 if parse_semver(sys.argv[1]) > parse_semver(sys.argv[2]) else 1)' "${{ steps.version.outputs.version }}" "$PREVIOUS" || {
+            echo "Version is unchanged or not newer than $PREVIOUS; skipping release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          }
+      - name: Refuse mutable tags and releases
+        if: steps.bump.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then
+            echo "Tag $TAG already exists; releases are immutable." >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing replacement." >&2
+            exit 1
+          fi
+      - name: Run tests
+        if: steps.bump.outputs.release == 'true'
+        run: uv run --extra dev --extra gui pytest -q
+      - name: Build Pi wheel and runtime artifact
+        if: steps.bump.outputs.release == 'true'
+        shell: bash
+        run: |
+          rm -rf release-artifacts runtime-package
+          mkdir -p release-artifacts runtime-package/wheels runtime-package/runtime
+          uv build --wheel --out-dir release-artifacts
+          cp main.py runtime-package/runtime/main.py
+          uv pip download --system --no-deps --dest runtime-package/wheels 'loguru>=0.7.3'
+          tar -czf "release-artifacts/vpn-gateway-pi-runtime-${{ steps.version.outputs.version }}.tar.gz" -C runtime-package .
+      - name: Upload Pi artifacts
+        if: steps.bump.outputs.release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-artifacts
+          path: release-artifacts/*
+          if-no-files-found: error
+
+  windows-gui:
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v5
+      - name: Build Windows GUI and update helper
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force dist, build, gui-package, release-artifacts -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path gui-package, release-artifacts | Out-Null
+          uv run --extra dev --extra gui pyinstaller --clean --noconfirm VPN-Gateway-Manager.spec
+          uv run --extra dev --extra gui pyinstaller --clean --noconfirm --onefile --name VPN-Gateway-Manager-update-helper vpn_gateway_gui/update_helper.py
+          Copy-Item dist/VPN-Gateway-Manager.exe gui-package/VPN-Gateway-Manager.exe
+          Copy-Item dist/VPN-Gateway-Manager-update-helper.exe gui-package/VPN-Gateway-Manager-update-helper.exe
+          Compress-Archive -Path gui-package/* -DestinationPath "release-artifacts/VPN-Gateway-Manager-${{ needs.prepare.outputs.version }}.zip" -CompressionLevel Optimal
+      - name: Upload Windows GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui
+          path: release-artifacts/*
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, windows-gui]
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v5
+      - name: Download Pi artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: pi-artifacts
+          path: release-artifacts
+      - name: Download Windows GUI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-gui
+          path: release-artifacts
+      - name: Create and sign manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          version = os.environ["VERSION"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          files = sorted(Path("release-artifacts").iterdir())
+          artifacts = {}
+          for path in files:
+              if path.name.endswith(".whl"):
+                  key = "pi_wheel"
+              elif "runtime" in path.name:
+                  key = "pi_runtime"
+              else:
+                  key = "gui_zip"
+              artifacts[key] = {
+                  "filename": path.name,
+                  "url": f"https://github.com/{repository}/releases/download/v{version}/{path.name}",
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              }
+          manifest = {"version": version, "api_compatibility": {"min": 1, "max": 1}, "artifacts": artifacts}
+          Path("release-artifacts/manifest.json").write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+          Path("release-artifacts/manifest.canonical").write_bytes(json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
+          PY
+          printf '%s' "$RELEASE_SIGNING_KEY" > release-key.pem
+          PROVISIONED_KEY=$(python -c 'from vpn_gateway.release import RELEASE_PUBLIC_KEY_HEX; print(RELEASE_PUBLIC_KEY_HEX)')
+          if [ -z "$PROVISIONED_KEY" ]; then
+            echo "The production public key is not provisioned in vpn_gateway/release.py." >&2
+            exit 1
+          fi
+          SIGNING_KEY=$(openssl pkey -in release-key.pem -pubout -outform DER | xxd -p | tr -d '\n' | tail -c 64)
+          if [ "$SIGNING_KEY" != "$PROVISIONED_KEY" ]; then
+            echo "The Actions signing key does not match the embedded production public key." >&2
+            exit 1
+          fi
+          openssl pkeyutl -sign -rawin -inkey release-key.pem -in release-artifacts/manifest.canonical -out release-artifacts/manifest.sig
+          rm -f release-key.pem release-artifacts/manifest.canonical
+      - name: Tag and publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="v${{ needs.prepare.outputs.version }}"
+          if ! gh release create "$TAG" release-artifacts/* --target "$GITHUB_SHA" --title "$TAG" --generate-notes; then
+            gh release delete "$TAG" --yes >/dev/null 2>&1 || true
+            git push origin ":refs/tags/$TAG" >/dev/null 2>&1 || true
+            exit 1
+          fi

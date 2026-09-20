@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 vpn-gateway-cli = "vpn_gateway.cli:main"
+vpn-gateway-gui-update-helper = "vpn_gateway_gui.update_helper:main"
 
 [project.optional-dependencies]
 dev = [

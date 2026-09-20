@@ -29,6 +29,20 @@ python3 -m venv "$INSTALL_ROOT/venv"
 "$INSTALL_ROOT/venv/bin/pip" install --disable-pip-version-check --upgrade --force-reinstall "$REPOSITORY_ROOT"
 install -o root -g root -m 0755 "$SCRIPT_DIR/vpn-gateway-cli" /usr/local/bin/vpn-gateway-cli
 
+# Bootstrap a versioned release directory.  Runtime data stays in LEGACY_DIR
+# and /opt/vpn-gateway/config|state; only code and the private venv are linked.
+VERSION=$("$INSTALL_ROOT/venv/bin/python" -c 'import importlib.metadata; print(importlib.metadata.version("vpn-gateway-pi"))')
+RELEASES_DIR="$INSTALL_ROOT/releases"
+RELEASE_DIR="$RELEASES_DIR/$VERSION"
+install -d -m 0750 "$RELEASES_DIR" "$RELEASE_DIR/runtime"
+install -o root -g root -m 0644 "$REPOSITORY_ROOT/main.py" "$RELEASE_DIR/runtime/main.py"
+if [ ! -e "$RELEASE_DIR/venv" ]; then
+    ln -s "$INSTALL_ROOT/venv" "$RELEASE_DIR/venv"
+fi
+if [ ! -e "$RELEASES_DIR/current" ]; then
+    ln -s "$VERSION" "$RELEASES_DIR/current"
+fi
+
 # Keep the current service entry point but replace it atomically with the
 # hardened compatible implementation. Runtime configuration files are never copied.
 if [ -f "$LEGACY_DIR/main.py" ]; then
