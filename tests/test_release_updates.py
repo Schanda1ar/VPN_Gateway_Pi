@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import vpn_gateway.release as release_module
 
 from vpn_gateway.release import (
     ReleaseValidationError,
@@ -47,12 +48,11 @@ def test_ed25519_signature_and_manifest_compatibility() -> None:
     assert not verify_ed25519(canonical_manifest_bytes(manifest), signature, TEST_PUBLIC_KEY)
 
 
-def test_production_key_boundary_fails_closed_until_provisioned() -> None:
-    """The production verifier cannot silently use a test-vector trust anchor."""
+def test_production_key_boundary_fails_closed_until_provisioned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An absent production key still fails closed without changing real configuration."""
+    monkeypatch.setattr(release_module, "RELEASE_PUBLIC_KEY_HEX", "")
     with pytest.raises(ReleaseValidationError) as error:
-        from vpn_gateway.release import provisioned_public_key
-
-        provisioned_public_key()
+        release_module.provisioned_public_key()
     assert error.value.code == "KEY_NOT_PROVISIONED"
 
 
