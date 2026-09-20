@@ -112,12 +112,16 @@ jobs:
         if: steps.bump.outputs.release == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libgl1
+          sudo apt-get install --no-install-recommends -y libgl1 libegl1
           sudo ldconfig
           dpkg-query -W -f='${Status}\n' libgl1
+          dpkg-query -W -f='${Status}\n' libegl1
           test -e /usr/lib/x86_64-linux-gnu/libGL.so.1
+          test -e /usr/lib/x86_64-linux-gnu/libEGL.so.1
           ldconfig -p | grep -F 'libGL.so.1'
+          ldconfig -p | grep -F 'libEGL.so.1'
           python -c "import ctypes; ctypes.CDLL('libGL.so.1'); print('libGL loader OK')"
+          python -c "import ctypes; ctypes.CDLL('libEGL.so.1'); print('libEGL loader OK')"
       - name: Run tests
         if: steps.bump.outputs.release == 'true'
         run: uv run --extra dev --extra gui pytest -q

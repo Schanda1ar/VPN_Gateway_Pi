@@ -77,9 +77,14 @@ def test_release_workflow_build_contract_is_pinned() -> None:
     assert "sudo apt-get install --no-install-recommends -y libgl1" in workflow
     assert "sudo ldconfig" in workflow
     assert "dpkg-query -W -f='${Status}\\n' libgl1" in workflow
+    assert "sudo apt-get install --no-install-recommends -y libgl1 libegl1" in workflow
+    assert "dpkg-query -W -f='${Status}\\n' libegl1" in workflow
     assert "test -e /usr/lib/x86_64-linux-gnu/libGL.so.1" in workflow
+    assert "test -e /usr/lib/x86_64-linux-gnu/libEGL.so.1" in workflow
     assert "ldconfig -p | grep -F 'libGL.so.1'" in workflow
+    assert "ldconfig -p | grep -F 'libEGL.so.1'" in workflow
     assert "ctypes.CDLL('libGL.so.1')" in workflow
+    assert "ctypes.CDLL('libEGL.so.1')" in workflow
     assert "git/ref/tags/${TAG}" in workflow
     assert "releases/tags/${TAG}" in workflow
     assert "both remote tag and release are absent; retrying release." in workflow
