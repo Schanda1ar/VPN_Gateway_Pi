@@ -85,6 +85,8 @@ def test_release_workflow_build_contract_is_pinned() -> None:
     assert "ldconfig -p | grep -F 'libEGL.so.1'" in workflow
     assert "ctypes.CDLL('libGL.so.1')" in workflow
     assert "ctypes.CDLL('libEGL.so.1')" in workflow
+    assert "python -m pip download --no-deps --dest runtime-package/wheels 'loguru>=0.7.3'" in workflow
+    assert "uv pip download" not in workflow
     assert "git/ref/tags/${TAG}" in workflow
     assert "releases/tags/${TAG}" in workflow
     assert "both remote tag and release are absent; retrying release." in workflow

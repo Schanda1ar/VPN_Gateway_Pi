@@ -133,7 +133,7 @@ jobs:
           mkdir -p release-artifacts runtime-package/wheels runtime-package/runtime
           uv build --wheel --out-dir release-artifacts
           cp main.py runtime-package/runtime/main.py
-          uv pip download --system --no-deps --dest runtime-package/wheels 'loguru>=0.7.3'
+          python -m pip download --no-deps --dest runtime-package/wheels 'loguru>=0.7.3'
           tar -czf "release-artifacts/vpn-gateway-pi-runtime-${{ steps.version.outputs.version }}.tar.gz" -C runtime-package .
       - name: Upload Pi artifacts
         if: steps.bump.outputs.release == 'true'
